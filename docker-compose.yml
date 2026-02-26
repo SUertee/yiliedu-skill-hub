@@ -1,0 +1,9 @@
+services:
+  skill-hub:
+    build: ./skill-hub
+    container_name: skill-hub
+    env_file:
+      - ./skill-hub/.env
+    ports:
+      - "18001:8000"
+    restart: unless-stopped
