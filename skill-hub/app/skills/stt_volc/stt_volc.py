@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import gzip
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+import requests
 import websockets
 
 
@@ -125,6 +127,95 @@ def _chunk_size(fmt: str, rate: int, bits: int, channel: int) -> int:
     return 8192
 
 
+def _extract_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _extract_text(item)
+            if text and text not in parts:
+                parts.append(text)
+        return " ".join(parts).strip()
+
+    if not isinstance(value, dict):
+        return ""
+
+    for key in ("text", "transcript", "utterance_text", "recognition_text"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    for key in ("utterances", "segments", "results", "items"):
+        if key in value:
+            text = _extract_text(value[key])
+            if text:
+                return text
+
+    for key in ("result", "response", "payload_msg", "data"):
+        if key in value:
+            text = _extract_text(value[key])
+            if text:
+                return text
+
+    parts: list[str] = []
+    for nested in value.values():
+        text = _extract_text(nested)
+        if text and text not in parts:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
+def _transcript_from_result(result: dict[str, Any]) -> str:
+    text = _extract_text(result)
+    if text:
+        return text
+    raise RuntimeError("Unable to extract transcript text from Volcengine response")
+
+
+def _recognize_via_flash(
+    audio_bytes: bytes,
+    *,
+    language: str | None,
+    model_name: str,
+) -> dict[str, Any]:
+    api_url = _env(
+        "STT_VOLC_FLASH_API_URL",
+        "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+    )
+    app_id = _env("STT_VOLC_APP_ID")
+    access_token = _env("STT_VOLC_ACCESS_TOKEN")
+    resource_id = _env("STT_VOLC_FLASH_RESOURCE_ID", "volc.bigasr.auc_turbo")
+
+    if not app_id or not access_token:
+        raise RuntimeError("Missing STT_VOLC_APP_ID or STT_VOLC_ACCESS_TOKEN in app/skills/.env")
+
+    request_id = str(uuid.uuid4())
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-App-Key": app_id,
+        "X-Api-Access-Key": access_token,
+        "X-Api-Resource-Id": resource_id,
+        "X-Api-Request-Id": request_id,
+        "X-Api-Sequence": "-1",
+    }
+
+    request_payload: dict[str, Any] = {"model_name": model_name}
+    if language:
+        request_payload["language"] = language
+
+    payload = {
+        "user": {"uid": app_id},
+        "audio": {"data": base64.b64encode(audio_bytes).decode("utf-8")},
+        "request": request_payload,
+    }
+
+    response = requests.post(api_url, headers=headers, json=payload, timeout=180)
+    response.raise_for_status()
+    return response.json()
+
+
 async def _recognize_via_websocket(
     audio_bytes: bytes,
     *,
@@ -215,6 +306,35 @@ async def _recognize_via_websocket(
     }
 
 
+@router.post("/audio/transcriptions")
+async def openai_compatible_transcribe(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    model: str = Form("bigmodel"),
+):
+    """
+    OpenAI-compatible STT endpoint for Open WebUI.
+
+    Configure Open WebUI STT engine as "OpenAI" and set API Base URL to:
+    http://<skill-hub-host>:<port>/api/stt_volc
+    """
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="empty audio file")
+
+    try:
+        result = _recognize_via_flash(
+            audio_bytes,
+            language=language,
+            model_name=model or "bigmodel",
+        )
+        text = _transcript_from_result(result)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"volc stt failed: {exc}") from exc
+
+    return {"text": text}
+
+
 @router.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
@@ -231,9 +351,9 @@ async def transcribe(
     use_nostream: bool = Form(True),
 ):
     """
-    Transcribe an uploaded audio file via Volcengine large-model streaming ASR.
+    Debug endpoint for direct Volcengine STT access.
 
-    Default mode uses bigmodel_nostream for higher accuracy.
+    Default mode uses the existing SAUC websocket path to return provider-native output.
     """
     audio_bytes = await file.read()
     if not audio_bytes:
