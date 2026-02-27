@@ -189,7 +189,7 @@ async def _recognize_via_websocket(
     latest_result: dict[str, Any] | None = None
     responses: list[dict[str, Any]] = []
 
-    async with websockets.connect(api_url, additional_headers=headers, max_size=None) as ws:
+    async with websockets.connect(api_url, extra_headers=headers, max_size=None) as ws:
         response_headers = dict(ws.response_headers)
         await ws.send(_build_full_client_request(payload))
         first_response = _parse_server_message(await ws.recv())
