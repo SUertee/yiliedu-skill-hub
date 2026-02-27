@@ -1,5 +1,6 @@
 # Environment files
 skill-hub/.env
+skill-hub/app/skills/.env
 .env
 .env.*
 !.env.example

@@ -55,3 +55,13 @@ class LessonEvaluationsResponse(BaseModel):
     lesson_id: str
     total: int
     items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class TopicEvaluationsResponse(BaseModel):
+    ok: bool = True
+    teacher_name: str
+    topic: str
+    matched_lesson_id: str
+    matched_lesson: Dict[str, Any]
+    total: int
+    items: List[Dict[str, Any]] = Field(default_factory=list)

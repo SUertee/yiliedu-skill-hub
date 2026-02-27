@@ -7,3 +7,9 @@ services:
     ports:
       - "18001:8000"
     restart: unless-stopped
+    networks:
+      - baota_net
+
+networks:
+  baota_net:
+    external: true

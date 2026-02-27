@@ -7,10 +7,12 @@ from .schemas import (
     TeacherDetailResponse,
     TeacherLessonsResponse,
     TeacherSearchResponse,
+    TopicEvaluationsResponse,
 )
 from .service import (
     get_lesson_evaluations,
     get_teacher_detail,
+    get_topic_evaluations,
     list_teacher_lessons,
     search_teachers,
 )
@@ -63,6 +65,19 @@ def lesson_evaluations(
         not_found("lesson not found or no evaluations")
 
     return {"ok": True, "lesson_id": lesson_id, "total": len(items), "items": items}
+
+
+@router.get("/topic/evaluations", response_model=TopicEvaluationsResponse)
+def topic_evaluations(
+    teacher_name: str = Query(..., min_length=1, description="老师姓名"),
+    topic: str = Query(..., min_length=1, description="课题名称"),
+    limit: int = Query(20, ge=1, le=200),
+    _auth=Depends(require_api_key),
+):
+    result = get_topic_evaluations(teacher_name=teacher_name, topic=topic, limit=limit)
+    if not result:
+        not_found("no matched lesson/evaluations for teacher_name + topic")
+    return {"ok": True, **result}
 
 
 @router.get("/{teacher_id}", response_model=TeacherDetailResponse)
