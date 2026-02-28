@@ -1,6 +1,7 @@
 # Environment files
 skill-hub/.env
 skill-hub/app/skills/.env
+skill-hub/app/skills/lesson_sync/config.env
 .env
 .env.*
 !.env.example
