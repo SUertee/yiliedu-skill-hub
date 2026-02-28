@@ -1,101 +1,75 @@
-import os
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from app.core.auth import require_api_key
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def env(key: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(key, default)
-    return v if v not in ("", None) else default
+class LessonSyncSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).with_name("config.env")),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    N8N_WEBHOOK_URL: str
+    N8N_X_TOKEN: str | None = None
+    N8N_TIMEOUT_SECONDS: float = 30.0
 
 
-N8N_WEBHOOK_URL = env("N8N_WEBHOOK_URL")
-N8N_X_TOKEN = env("N8N_X_TOKEN")  # 推荐：走 X-Token
-N8N_BASIC_USER = env("N8N_BASIC_USER")
-N8N_BASIC_PASS = env("N8N_BASIC_PASS")
-
-if not N8N_WEBHOOK_URL:
-    raise RuntimeError("Missing N8N_WEBHOOK_URL env")
+class LessonSyncRequest(BaseModel):
+    source: str = Field(default="skill_hub")
+    sync_scope: str = Field(default="existing_data")
+    dry_run: bool = Field(default=False)
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
-app = FastAPI(title="lesson_sync")
+settings = LessonSyncSettings()
+router = APIRouter(prefix="/api/lesson_sync", tags=["lesson_sync"])
 
 
-# ---------
-# 1) 业务函数：空 POST 触发 n8n
-# ---------
-async def trigger_lesson_sync() -> Dict[str, Any]:
-    headers = {}
-    auth = None
-
-    # 方案 A：X-Token（推荐）
-    if N8N_X_TOKEN:
-        headers["X-Token"] = N8N_X_TOKEN
-
-    # 方案 B：Basic Auth（nginx 层）
-    if N8N_BASIC_USER and N8N_BASIC_PASS:
-        auth = (N8N_BASIC_USER, N8N_BASIC_PASS)
+@router.post("/sync")
+async def sync_existing_data(
+    payload: LessonSyncRequest | None = None,
+    _auth=Depends(require_api_key),
+):
+    request_payload = payload or LessonSyncRequest()
+    headers: dict[str, str] = {}
+    if settings.N8N_X_TOKEN:
+        headers["X-Token"] = settings.N8N_X_TOKEN
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(N8N_WEBHOOK_URL, headers=headers, auth=auth)
-            r.raise_for_status()
+        async with httpx.AsyncClient(timeout=settings.N8N_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                settings.N8N_WEBHOOK_URL,
+                json=request_payload.model_dump(),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"n8n request failed: {exc}") from exc
 
-            ct = (r.headers.get("content-type") or "").lower()
-            if "application/json" in ct:
-                resp = r.json()
-            else:
-                resp = {"text": r.text}
+    try:
+        result: Any = response.json()
+    except ValueError:
+        result = response.text
 
-        return {"ok": True, "webhook": N8N_WEBHOOK_URL, "response": resp}
-
-    except httpx.HTTPStatusError as e:
+    if response.is_error:
         raise HTTPException(
             status_code=502,
-            detail=f"n8n webhook failed: {e.response.status_code} {e.response.text}",
+            detail={
+                "message": "n8n webhook returned error",
+                "status_code": response.status_code,
+                "result": result,
+            },
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"n8n webhook error: {repr(e)}")
 
-
-# ---------
-# 2) MCP 风格：tools/list 与 tools/call
-# ---------
-class ToolsCallIn(BaseModel):
-    name: str
-    arguments: Dict[str, Any] = {}
-
-
-@app.get("/tools/list")
-async def tools_list() -> Dict[str, Any]:
-    # OpenWebUI 通常需要这种 tool schema（function calling）
     return {
-        "tools": [
-            {
-                "name": "lesson_sync_all",
-                "description": "触发 n8n 执行公开课全量/批量同步（空 POST，不需要 body）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            }
-        ]
+        "ok": True,
+        "status_code": response.status_code,
+        "result": result,
     }
-
-
-@app.post("/tools/call")
-async def tools_call(req: ToolsCallIn) -> Dict[str, Any]:
-    if req.name == "lesson_sync_all":
-        result = await trigger_lesson_sync()
-        return {"ok": True, "result": result}
-
-    raise HTTPException(status_code=404, detail=f"Unknown tool: {req.name}")
-
-
-# （可选）给你一个直连调试入口，不走 tools/call 也能打
-@app.post("/lesson_sync_all")
-async def lesson_sync_all_direct() -> Dict[str, Any]:
-    return await trigger_lesson_sync()
