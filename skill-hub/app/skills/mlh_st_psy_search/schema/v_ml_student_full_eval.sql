@@ -2,9 +2,12 @@ CREATE OR REPLACE VIEW v_ml_student_full_eval AS
 WITH base AS (
   SELECT
     s.id AS student_id,
+    s.student_number,
     s.name,
+    s.class_id,
     s.class_name,
     s.grade_level,
+    s.enroll_year,
     s.gender,
     s.birth_date,
     s.interests,
@@ -17,7 +20,10 @@ WITH base AS (
     s.height,
     s.weight,
     s.semester,
-    s.fill_date
+    s.fill_date,
+    s.user_id,
+    s.created_at,
+    s.updated_at
   FROM ml_students s
 ),
 fam AS (
@@ -30,7 +36,7 @@ fam AS (
       ),
       '；' ORDER BY id
     ) AS family_members_summary,
-    string_agg(DISTINCT relationship, '、') AS family_roles
+    string_agg(DISTINCT relationship, '、' ORDER BY relationship) AS family_roles
   FROM ml_st_family_members
   GROUP BY student_id
 ),
@@ -44,7 +50,7 @@ env AS (
     parenting_style,
     record_date
   FROM ml_st_family_environments
-  ORDER BY student_id, created_at DESC
+  ORDER BY student_id, created_at DESC NULLS LAST, id DESC
 ),
 eval AS (
   SELECT DISTINCT ON (student_id)
@@ -63,7 +69,7 @@ eval AS (
     environment_remark,
     created_at AS eval_created_at
   FROM ml_st_general_evaluation
-  ORDER BY student_id, created_at DESC
+  ORDER BY student_id, created_at DESC NULLS LAST, id DESC
 ),
 warning_latest AS (
   SELECT DISTINCT ON (student_id)
@@ -88,7 +94,7 @@ counsel_latest AS (
     session_time AS latest_session_time,
     session_duration AS latest_session_duration
   FROM ml_st_counseling_record
-  ORDER BY student_id, session_time DESC
+  ORDER BY student_id, session_time DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
 ),
 special_latest AS (
   SELECT DISTINCT ON (student_id)
@@ -96,32 +102,7 @@ special_latest AS (
     counseling_type AS latest_special_type,
     session_time AS latest_special_time
   FROM ml_st_counseling_special
-  ORDER BY student_id, session_time DESC
-),
-
-/* ✅ 改动点：预约按 student_name 聚合成 “每个姓名最新一条” */
-appt_latest AS (
-  SELECT DISTINCT ON (student_name_key)
-    student_name_key,
-    student_name,
-    appointment_date AS latest_appointment_date,
-    room AS latest_room,
-    is_booked AS latest_is_booked,
-    submitter AS latest_submitter,
-    student_id AS appt_student_id   -- 保留一下，方便你排查/迁移
-  FROM (
-    SELECT
-      a.*,
-      lower(trim(a.student_name)) AS student_name_key
-    FROM ml_st_room_appointments a
-    WHERE a.student_name IS NOT NULL
-      AND trim(a.student_name) <> ''
-  ) t
-  ORDER BY
-    student_name_key,
-    appointment_date DESC NULLS LAST,
-    modified_at DESC NULLS LAST,
-    created_at DESC NULLS LAST
+  ORDER BY student_id, session_time DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
 )
 
 SELECT
@@ -186,7 +167,26 @@ LEFT JOIN eval ev ON ev.student_id = b.student_id
 LEFT JOIN warning_latest wl ON wl.student_id = b.student_id
 LEFT JOIN counsel_latest cl ON cl.student_id = b.student_id
 LEFT JOIN special_latest sl ON sl.student_id = b.student_id
-
-/* ✅ 改动点：用学生姓名 join */
-LEFT JOIN appt_latest al
-  ON al.student_name_key = lower(trim(b.name));
+LEFT JOIN LATERAL (
+  SELECT
+    a.appointment_date AS latest_appointment_date,
+    a.room AS latest_room,
+    a.is_booked AS latest_is_booked,
+    a.submitter AS latest_submitter
+  FROM ml_st_room_appointments a
+  WHERE
+    (
+      NULLIF(trim(a.student_id), '') IS NOT NULL
+      AND a.student_id = b.student_id
+    )
+    OR (
+      NULLIF(trim(a.student_id), '') IS NULL
+      AND NULLIF(trim(a.student_name), '') IS NOT NULL
+      AND lower(trim(a.student_name)) = lower(trim(b.name))
+    )
+  ORDER BY
+    a.appointment_date DESC NULLS LAST,
+    a.modified_at DESC NULLS LAST,
+    a.created_at DESC NULLS LAST
+  LIMIT 1
+) al ON TRUE;

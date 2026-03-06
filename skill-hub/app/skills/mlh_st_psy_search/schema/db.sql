@@ -143,7 +143,7 @@ create table if not exists ml_st_counseling_special (
   session_time            timestamptz not null,        -- 辅导时间
   created_at              timestamptz,
   updated_at              timestamptz
-)
+);
 
 -- 5. 预警记录表
 create table if not exists ml_st_warning_records (
@@ -170,3 +170,21 @@ create table if not exists ml_st_report (
     error_message  text,                         -- 失败原因
     created_at     timestamptz default now()
 );
+
+-- 常用检索索引
+create index if not exists idx_ml_students_name on ml_students(name);
+create index if not exists idx_ml_students_class_grade on ml_students(class_name, grade_level);
+create index if not exists idx_ml_students_fill_date on ml_students(fill_date);
+
+create index if not exists idx_ml_st_family_members_student_id on ml_st_family_members(student_id);
+create index if not exists idx_ml_st_family_environments_student_id_created_at on ml_st_family_environments(student_id, created_at desc);
+create index if not exists idx_ml_st_general_evaluation_student_id_created_at on ml_st_general_evaluation(student_id, created_at desc);
+
+create index if not exists idx_ml_st_room_appointments_student_id_appt_date on ml_st_room_appointments(student_id, appointment_date desc);
+create index if not exists idx_ml_st_room_appointments_student_name_appt_date on ml_st_room_appointments(student_name, appointment_date desc);
+
+create index if not exists idx_ml_st_counseling_record_student_time on ml_st_counseling_record(student_id, session_time desc);
+create index if not exists idx_ml_st_counseling_special_student_time on ml_st_counseling_special(student_id, session_time desc);
+
+create index if not exists idx_ml_st_warning_records_student_warning_date on ml_st_warning_records(student_id, warning_date desc);
+create index if not exists idx_ml_st_warning_records_level_type on ml_st_warning_records(warning_level, warning_type);
