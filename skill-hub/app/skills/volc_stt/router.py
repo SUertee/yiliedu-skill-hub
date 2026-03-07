@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from app.core.auth import require_api_key
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import Depends
 
 from .audio import guess_format, normalize_audio_for_flash
 from .flash_client import recognize_via_flash, transcript_from_result
@@ -95,6 +97,7 @@ async def openai_compatible_transcribe(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     model: str = Form("bigmodel"),
+    _auth=Depends(require_api_key),
 ):
     return await _openai_compatible_transcribe_impl(
         file=file,
@@ -117,6 +120,7 @@ async def transcribe(
     enable_ddc: bool = Form(False),
     result_type: str = Form("full"),
     use_nostream: bool = Form(True),
+    _auth=Depends(require_api_key),
 ):
     return await _transcribe_impl(
         file=file,
